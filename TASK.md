@@ -108,9 +108,11 @@ SheetSage2 / MERT2 (covers, audio -> ABC) is OUT of scope for v1.
 - Gate P1c: teacher-forced logits: argmax matches Python at all 64 positions;
   max |logit diff| <= 0.5 in bf16 and hidden-state cosine similarity >= 0.999 at
   each dumped layer. Report the actual numbers.
-- Gate P1d: greedy decode of the ABC plan from the prefix, 64 steps, equals the
-  first 64 tokens of `abc_tokens.npy` (greedy in both; add a `--greedy` dump to the
-  Python tool for this).
+- Gate P1d (CLARIFIED 2026-09-14, owner decision): greedy decode of the ABC plan
+  from the prefix, 64 steps, equals the first 64 tokens of the Python GREEDY dump
+  (`--greedy`); this is the gate. The comparison against the original SAMPLED
+  `abc_tokens.npy` (61/64, ties at steps 16/17/26 per REPORT-P1) is advisory: keep
+  the test, report the count, do not fail on it.
 
 ### Phase 2: AR sampling + full plan and semantic generation
 - Gate P2a (ADVISORY since 2026-09-14, owner decision: sampling is not bit-exact by
