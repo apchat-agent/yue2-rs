@@ -174,6 +174,7 @@ pub struct CachedNAR<'a> {
     nar_length: usize,
     query_chunk_size: usize,
 }
+type SolverObserver<'a> = &'a mut dyn FnMut(&str, &Tensor) -> Result<()>;
 impl<'a> CachedNAR<'a> {
     pub fn new(
         model: &'a YuE2ForCausalLM,
@@ -302,14 +303,12 @@ impl<'a> CachedNAR<'a> {
         let dtype = self.model.dtype();
         let zero = Tensor::zeros((1, 64), dtype, self.model.device())?;
         let x_nar = Tensor::cat(&[&zero, state, &zero], 0)?.unsqueeze(0)?;
-        let raw = Tensor::new(raw_t as f32, self.model.device())?.to_dtype(dtype)?;
-        let t_sig = candle_nn::ops::sigmoid(&raw.to_dtype(DType::F32)?)?.to_dtype(dtype)?;
-        let shift = self.weights.config.timestep_shift;
-        let numerator = scalar_mul(&t_sig, shift)?;
-        let denominator =
-            (scalar_mul(&t_sig, shift - 1.)?.to_dtype(DType::F32)? + 1.)?.to_dtype(dtype)?;
-        let shifted = (numerator.to_dtype(DType::F32)? / denominator.to_dtype(DType::F32)?)?
-            .to_dtype(dtype)?;
+        let shifted = shifted_time(
+            raw_t,
+            self.weights.config.timestep_shift,
+            dtype,
+            self.model.device(),
+        )?;
         let time = self
             .weights
             .time_embedder
@@ -344,7 +343,17 @@ impl<'a> CachedNAR<'a> {
         &self,
         steps: usize,
         cancelled: Option<&dyn Fn() -> bool>,
+        on_progress: Option<&mut dyn FnMut(usize, usize)>,
+    ) -> Result<Tensor> {
+        self.solve_observed(steps, cancelled, on_progress, None)
+    }
+
+    fn solve_observed(
+        &self,
+        steps: usize,
+        cancelled: Option<&dyn Fn() -> bool>,
         mut on_progress: Option<&mut dyn FnMut(usize, usize)>,
+        mut observe: Option<SolverObserver<'_>>,
     ) -> Result<Tensor> {
         ensure!(steps > 0, "Steps must be positive");
         let mut state = self
@@ -358,8 +367,26 @@ impl<'a> CachedNAR<'a> {
             let t = 1. - step as f64 * dt;
             let first = self.velocity(&state, raw_time(t))?;
             let mid = (&state - scalar_mul(&first, dt / 2.)?)?;
+            if let Some(put) = observe.as_mut() {
+                put(&format!("step.{step:02}.state"), &state)?;
+                put(
+                    &format!("step.{step:02}.raw_t"),
+                    &Tensor::new(raw_time(t), &Device::Cpu)?,
+                )?;
+                put(
+                    &format!("step.{step:02}.raw_mid"),
+                    &Tensor::new(raw_time(t - dt / 2.), &Device::Cpu)?,
+                )?;
+                put(&format!("step.{step:02}.first"), &first)?;
+                put(&format!("step.{step:02}.mid"), &mid)?;
+            }
             check_cancelled(cancelled)?;
-            state = (&state - scalar_mul(&self.velocity(&mid, raw_time(t - dt / 2.))?, dt)?)?;
+            let second = self.velocity(&mid, raw_time(t - dt / 2.))?;
+            state = (&state - scalar_mul(&second, dt)?)?;
+            if let Some(put) = observe.as_mut() {
+                put(&format!("step.{step:02}.second"), &second)?;
+                put(&format!("step.{step:02}.next"), &state)?;
+            }
             if let Some(callback) = on_progress.as_mut() {
                 callback(step + 1, steps);
             }
@@ -368,6 +395,15 @@ impl<'a> CachedNAR<'a> {
         finite(&result)?;
         Ok(result)
     }
+}
+
+fn shifted_time(raw_t: f64, shift: f64, dtype: DType, device: &Device) -> Result<Tensor> {
+    let raw = Tensor::new(raw_t as f32, device)?.to_dtype(dtype)?;
+    let t_sig = candle_nn::ops::sigmoid(&raw.to_dtype(DType::F32)?)?.to_dtype(dtype)?;
+    let numerator = scalar_mul(&t_sig, shift)?;
+    let denominator =
+        (scalar_mul(&t_sig, shift - 1.)?.to_dtype(DType::F32)? + 1.)?.to_dtype(dtype)?;
+    Ok((numerator.to_dtype(DType::F32)? / denominator.to_dtype(DType::F32)?)?.to_dtype(dtype)?)
 }
 
 fn raw_time(t: f64) -> f64 {
@@ -380,3 +416,7 @@ fn scalar_mul(x: &Tensor, scale: f64) -> Result<Tensor> {
 #[cfg(test)]
 #[path = "nar_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "nar_stages.rs"]
+mod stages;
