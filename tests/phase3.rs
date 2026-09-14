@@ -61,6 +61,22 @@ fn paired_latents(dtype: DType) -> Result<()> {
     } else {
         "P3(b) BF16"
     };
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("manifest.json"))?)?;
+    for name in ["nar.safetensors", "p3b-python.safetensors"] {
+        let digest = yue2::storage::sha256_file(root.join(name))?;
+        ensure!(
+            manifest["files"][name]["sha256"] == digest,
+            "Immutable fixture hash mismatch: {name}"
+        );
+        if name == "p3b-python.safetensors" {
+            ensure!(
+                digest == "e6c122b87f78be8312ba6ed5eed63514789b1aed9a3cb9823666edda5a018994",
+                "Stored P3 FP32 control changed"
+            );
+        }
+        println!("{tier} immutable {name}: sha256={digest}");
+    }
     let tensors = candle_core::safetensors::load(root.join("nar.safetensors"), &Device::Cpu)?;
     let metadata: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.join("nar.json"))?)?;

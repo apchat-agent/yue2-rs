@@ -2,6 +2,21 @@ use super::*;
 use std::collections::HashMap;
 
 #[test]
+fn decoder_default_tanh_and_config_json_override() -> Result<()> {
+    assert!(DecoderConfig::default().final_tanh);
+    let omitted: YuE2VAEConfig = serde_json::from_str(r#"{"decoder_config": {}}"#)?;
+    assert!(omitted.decoder_config.final_tanh);
+    // Same nested config.json field used by the released checkpoint loader.
+    let explicit: YuE2VAEConfig =
+        serde_json::from_str(r#"{"decoder_config": {"final_tanh": false}}"#)?;
+    assert!(!explicit.decoder_config.final_tanh);
+    let enabled: YuE2VAEConfig =
+        serde_json::from_str(r#"{"decoder_config": {"final_tanh": true}}"#)?;
+    assert!(enabled.decoder_config.final_tanh);
+    Ok(())
+}
+
+#[test]
 fn transposed_weight_norm_axis_and_padding_match_scalar_scatter() -> Result<()> {
     // Unequal channel counts expose an accidental dim=1 norm or transposition.
     for stride in [2, 3, 5, 6] {

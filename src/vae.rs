@@ -38,7 +38,7 @@ impl Default for DecoderConfig {
             antialias_activation: false,
             use_nearest_upsample: false,
             use_filter: false,
-            final_tanh: false,
+            final_tanh: true,
         }
     }
 }

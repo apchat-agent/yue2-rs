@@ -4,6 +4,7 @@ pub mod nar;
 pub mod pipeline;
 pub mod protocol;
 pub mod sampling;
+pub mod storage;
 pub mod tokenizer;
 pub mod vae;
 

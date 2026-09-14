@@ -1,6 +1,7 @@
 /target/
 /.cargo-home/
 /fixtures/
+/runs/
 *.safetensors
 *.npy
 __pycache__/
