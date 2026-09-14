@@ -259,6 +259,7 @@ def main():
     parser.add_argument("--vae-dir", type=Path, default=snapshot("YuE2-Vae"))
     parser.add_argument("--greedy", action="store_true")
     parser.add_argument("--two-chunks", action="store_true", help="Also dump an explicit smaller-context two-chunk case")
+    parser.add_argument("--phase2-sampling", action="store_true", help="Only add Phase 2 sampling oracles; preserve all P0/P1 fixtures")
     args = parser.parse_args()
     if os.environ.get("CUDA_VISIBLE_DEVICES") != "0":
         raise ValueError("Set CUDA_VISIBLE_DEVICES=0; the other GPUs are shared")
@@ -274,6 +275,10 @@ def main():
     torch.cuda.set_per_process_memory_fraction(28 * 2**30 / total, 0)
     torch.cuda.reset_peak_memory_stats()
     writer = Writer(args.output)
+    if args.phase2_sampling:
+        from dump_sampling import dump_sampling
+        dump_sampling(writer, args.source)
+        return
     tokenizer = YuE2TextTokenizer(args.model_dir / "qwen.tiktoken")
     arrays, request = dump_tokens(writer, tokenizer, args.source)
     model = YuE2ForCausalLM.from_pretrained(args.model_dir, local_files_only=True,

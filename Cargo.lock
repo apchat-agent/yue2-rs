@@ -2140,6 +2140,8 @@ dependencies = [
  "candle-core",
  "candle-flash-attn",
  "candle-nn",
+ "half",
+ "rand",
  "serde",
  "serde_json",
  "tiktoken-rs",
