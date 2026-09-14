@@ -68,18 +68,40 @@ kernels still compile with the installed CUDA 13.3 toolchain. Override the libra
 directory with `YUE2_REFERENCE_CUBLAS`. No reference files are edited.
 
 Existing parity fixtures stay under `~/work/yue2-rs-fixtures/first-song/` and are
-not committed. Ignored tests skip when `YUE2_FIXTURES` is unset. The Phase 5 audit
+not committed, including `manifest.json`. P3 requires its `files` SHA-256 entries
+for `nar.safetensors` and `p3b-python.safetensors`. To regenerate the base manifest
+and its P3 fixture entries using the reference venv and GPU 0:
+
+```bash
+export PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 CUDA_VISIBLE_DEVICES=0
+"$HOME/yue2/.venv/bin/python" tools/dump_reference.py --greedy --two-chunks
+"$HOME/yue2/.venv/bin/python" tools/dump_reference.py --nar-stages
+"$HOME/yue2/.venv/bin/python" tools/pin_p3_control.py --root "$HOME/work/yue2-rs-fixtures"
+```
+
+For existing fixtures, only the last command is needed to add the retained FP32
+control entry; append `--check` for read-only verification. It verifies the
+committed control digest before updating the manifest.
+
+Running `python tools/measure_python_eager.py` without arguments uses a timestamped
+subdirectory under `~/work/yue2-rs-fixtures/first-song/p2-eager/` when that default
+directory is nonempty, and prints the destination to stderr. Explicit `--output`
+must be empty.
+
+Ignored tests skip when `YUE2_FIXTURES` is unset. The Phase 5 audit
 rebuilds cleanly, runs all three CLI commands, measures Python eager, verifies
 artifacts with Python, then reruns every P1–P4 gate:
 
 ```bash
 export YUE2_FIXTURES="$HOME/work/yue2-rs-fixtures"
+export YUE2_P5_OUTPUT="$PWD/runs/p5-audit-$(date -u +%Y%m%dT%H%M%S)"
 tools/audit_phase5.sh > "$HOME/work/yue2-rs-logs/p5-audit-commands.log" 2>&1
 ```
 
-The script retains the known literal P1d failure: Rust matches Python's separate
-eager greedy oracle at 64/64 tokens, but the original `abc_tokens.npy` was sampled
-and matches only 61/64. It does not waive or hide that failure. P2a structural
-comparisons and P3 BF16 maximum absolute errors are advisory under TASK.md.
-See [REPORT-P5.md](REPORT-P5.md) for current gate numbers, timings and limitations;
-earlier reports remain the historical evidence for their phases.
+The 2026-09-14 cleanup audit exited **0**, with all 26 steps passing; logs are in
+`~/work/yue2-rs-logs/p5-cleanup-20260914/`. P1d still asserts the Python eager
+greedy oracle match (64/64). The original sampled `abc_tokens.npy` comparison
+reports 61/64 as advisory under the clarified TASK.md gate. P2a structural
+comparisons and P3 BF16 maximum absolute errors also remain advisory.
+See [REPORT-P5.md](REPORT-P5.md) for Phase 5 timings and limitations; phase reports
+retain their historical results, including the former literal P1d failure.

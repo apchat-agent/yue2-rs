@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Phase 5 clean self-audit plus every inherited P1a-P4b gate. Never dump fixtures.
-# The known literal sampled-artifact P1d failure is retained in the exit status.
+# P1d asserts greedy parity and reports the sampled-artifact comparison as advisory.
 set -uo pipefail
 : "${YUE2_FIXTURES:?Set YUE2_FIXTURES to the existing fixture directory}"
 [[ ${CUDA_VISIBLE_DEVICES-} == 0 ]] || { printf 'Set CUDA_VISIBLE_DEVICES=0\n' >&2; exit 1; }

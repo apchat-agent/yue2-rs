@@ -4,7 +4,9 @@ import argparse
 import dataclasses
 import json
 import os
+import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
@@ -23,8 +25,11 @@ def main():
     source = Path.home() / "yue2/outputs/first-song"
     output = args.output or Path.home() / "work/yue2-rs-fixtures/first-song/p2-eager"
     if output.exists() and any(output.iterdir()):
-        raise FileExistsError(f"Use an empty measurement directory: {output}")
+        if args.output is not None:
+            raise FileExistsError(f"Use an empty measurement directory: {output}")
+        output = output / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     output.mkdir(parents=True, exist_ok=True)
+    print(f"Measurement directory: {output}", file=sys.stderr, flush=True)
     saved = json.loads((source / "plan.json").read_text())
     request = SongRequest(**saved["request"])
     config = GenerationConfig.from_dict(json.loads((source / "config.json").read_text())["generation"])
