@@ -127,8 +127,15 @@ SheetSage2 / MERT2 (covers, audio -> ABC) is OUT of scope for v1.
   (execution=eager, same GPU, same request) and report both comparisons.
 
 ### Phase 3: NAR
-- Gate P3: with the dumped noise, Rust latents for the first 2 chunks match Python
-  within max |diff| <= 1e-2 (f32) and cosine >= 0.999; report both per chunk.
+- Gate P3 (REWORDED 2026-09-14 by the owner after REPORT-P3b.md: FP32 paired runs
+  agree to 2e-5, so the algorithm is faithful and the bf16 trajectory difference is
+  backend rounding amplified over 64 velocity steps). Two tiers, both required:
+  (a) algorithmic parity: with identical checkpoint values, dumped noise, original
+  chunk boundaries and 32 midpoint steps, a paired FP32 Python/Rust run has final
+  max |diff| <= 1e-3 and cosine >= 0.999999 per chunk; (b) production CUDA BF16
+  against the original Python BF16 oracle: cosine >= 0.999 per chunk, and REPORT
+  the max |diff|, the native stage dtypes and the first divergent operation. The
+  BF16 max |diff| bound is advisory (report it, do not fail on it).
 
 ### Phase 4: VAE decoder
 - Gate P4a: per-DecoderBlock outputs match within max |diff| <= 1e-3.
