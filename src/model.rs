@@ -1,5 +1,4 @@
-//! AR path of yue2-infer 0.1.6 modeling_yue2.py, with checkpoint-compatible names.
-//! NAR routing/auxiliaries belong to Phase 3 and are intentionally not loaded here.
+//! yue2-infer 0.1.6 backbone with checkpoint-compatible names.
 use anyhow::{ensure, Context, Result};
 use candle_core::{DType, Device, Module, Tensor, D};
 use candle_nn::{Embedding, Linear, VarBuilder};
@@ -8,13 +7,18 @@ use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 mod diagnostics;
+pub(crate) mod nar;
+pub use nar::{AudioPositionEmbedding, NarConfig, TimestepEmbedder};
 
 fn linear_forward(linear: &Linear, x: &Tensor) -> candle_core::Result<Tensor> {
-    if x.device().is_cpu() && x.dtype() == DType::BF16 {
+    if x.dtype() == DType::BF16 && (x.device().is_cpu() || linear.bias().is_some()) {
         // candle's CPU matmul has no BF16 implementation. Preserve BF16
         // operation boundaries around an FP32 accumulation on this backend.
+        // Torch's biased addmm adds bias before its BF16 cast. Keep that single
+        // rounding boundary for the four small acoustic auxiliary projections.
         let weight = linear.weight().to_dtype(DType::F32)?;
-        return Linear::new(weight, None)
+        let bias = linear.bias().map(|b| b.to_dtype(DType::F32)).transpose()?;
+        return Linear::new(weight, bias)
             .forward(&x.to_dtype(DType::F32)?)?
             .to_dtype(DType::BF16);
     }
@@ -319,6 +323,16 @@ impl Attention {
             .reshape((b, h * groups, t, d))?)
     }
     fn sdpa(&self, q: &Tensor, k: &Tensor, v: &Tensor, offset: usize) -> Result<Tensor> {
+        self.sdpa_tiled(q, k, v, Some(offset), 128)
+    }
+    fn sdpa_tiled(
+        &self,
+        q: &Tensor,
+        k: &Tensor,
+        v: &Tensor,
+        offset: Option<usize>,
+        tile: usize,
+    ) -> Result<Tensor> {
         // Bound temporary score storage without changing the visible key set.
         // Accumulate scores and weighted values in FP32. Eager Torch CUDA SDPA
         // rounds the unnormalized softmax numerator to BF16 before its value
@@ -329,26 +343,29 @@ impl Attention {
         let key = self.repeat_kv(k)?.to_dtype(DType::F32)?.t()?.contiguous()?;
         let value = self.repeat_kv(v)?.to_dtype(DType::F32)?.contiguous()?;
         let mut pieces = Vec::new();
-        for start in (0..query_len).step_by(128) {
-            let count = (query_len - start).min(128);
+        for start in (0..query_len).step_by(tile) {
+            let count = (query_len - start).min(tile);
             let query = q
                 .narrow(2, start, count)?
                 .to_dtype(DType::F32)?
                 .contiguous()?;
             let scores = (query.matmul(&key)? * (1. / (self.head_dim as f64).sqrt()))?;
-            let mask: Vec<f32> = (0..count)
-                .flat_map(|i| {
-                    (0..key_len).map(move |j| {
-                        if j <= offset + start + i {
-                            0.
-                        } else {
-                            f32::NEG_INFINITY
-                        }
+            let scores = if let Some(offset) = offset {
+                let mask: Vec<f32> = (0..count)
+                    .flat_map(|i| {
+                        (0..key_len).map(move |j| {
+                            if j <= offset + start + i {
+                                0.
+                            } else {
+                                f32::NEG_INFINITY
+                            }
+                        })
                     })
-                })
-                .collect();
-            let scores =
-                scores.broadcast_add(&Tensor::from_vec(mask, (count, key_len), q.device())?)?;
+                    .collect();
+                scores.broadcast_add(&Tensor::from_vec(mask, (count, key_len), q.device())?)?
+            } else {
+                scores
+            };
             let numerator = scores
                 .broadcast_sub(&scores.max_keepdim(D::Minus1)?)?
                 .exp()?;
@@ -515,6 +532,7 @@ pub struct YuE2ForCausalLM {
     pub config: YuE2Config,
     model: Backbone,
     lm_head: Linear,
+    nar: Option<nar::NarWeights>,
 }
 
 impl YuE2ForCausalLM {
@@ -528,6 +546,7 @@ impl YuE2ForCausalLM {
                 vb.pp("lm_head"),
             )?,
             config,
+            nar: None,
         })
     }
     /// Memory-map immutable checkpoint weights; only AR tensors are loaded.

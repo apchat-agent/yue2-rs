@@ -2142,6 +2142,7 @@ dependencies = [
  "candle-nn",
  "half",
  "rand",
+ "rand_distr",
  "serde",
  "serde_json",
  "tiktoken-rs",

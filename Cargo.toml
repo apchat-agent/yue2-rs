@@ -19,6 +19,7 @@ candle-nn = "0.11"
 candle-flash-attn = { version = "0.11", optional = true }
 half = "2"
 rand = "0.9"
+rand_distr = "0.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tiktoken-rs = "0.12"

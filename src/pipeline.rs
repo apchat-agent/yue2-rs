@@ -1,4 +1,4 @@
-//! Symbolic and semantic stages of yue2-infer 0.1.6 pipeline.py.
+//! Symbolic, semantic and acoustic stages of yue2-infer 0.1.6 pipeline.py.
 use crate::{
     model::YuE2ForCausalLM,
     protocol::*,
@@ -150,4 +150,28 @@ pub fn generate_semantic(
         timing: serde_json::to_value(result.timing)?,
         truncated: result.truncated,
     })
+}
+
+/// Acoustic stage with exact retained plan validation and request-owned noise.
+pub fn synthesize(
+    model: &YuE2ForCausalLM,
+    tokenizer: &YuE2TextTokenizer,
+    semantic: &SemanticResult,
+    options: crate::nar::SynthesisOptions<'_>,
+) -> Result<candle_core::Tensor> {
+    ensure!(
+        token_prefixes(
+            &semantic.plan.request,
+            tokenizer,
+            Some(&semantic.plan.abc_ids)
+        )? == semantic.plan.prefix,
+        "Semantic result does not retain the request's exact prefix"
+    );
+    crate::nar::synthesize(
+        model,
+        &semantic.plan.prefix,
+        &semantic.tokens,
+        semantic.plan.request.seed,
+        options,
+    )
 }
