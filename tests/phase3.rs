@@ -24,8 +24,18 @@ fn metrics(a: &Tensor, b: &Tensor) -> Result<(f64, f64)> {
 }
 
 #[test]
-#[ignore = "requires YUE2_FIXTURES and 3B checkpoint; GPU 0 for the BF16 P3 gate"]
-fn p3_dumped_noise_latents() -> Result<()> {
+#[ignore = "requires YUE2_FIXTURES, 3B checkpoint and the existing P3b FP32 Python control"]
+fn p3a_fp32_paired_latents() -> Result<()> {
+    paired_latents(DType::F32)
+}
+
+#[test]
+#[ignore = "requires YUE2_FIXTURES, 3B checkpoint and CUDA GPU 0"]
+fn p3b_bf16_latents() -> Result<()> {
+    paired_latents(DType::BF16)
+}
+
+fn paired_latents(dtype: DType) -> Result<()> {
     let Some(root) = std::env::var_os("YUE2_FIXTURES") else {
         eprintln!("SKIP: YUE2_FIXTURES is unset");
         return Ok(());
@@ -43,17 +53,38 @@ fn p3_dumped_noise_latents() -> Result<()> {
     } else {
         Device::Cpu
     };
+    if dtype == DType::BF16 {
+        ensure!(device.is_cuda(), "P3(b) requires production CUDA BF16");
+    }
+    let tier = if dtype == DType::F32 {
+        "P3(a) FP32"
+    } else {
+        "P3(b) BF16"
+    };
     let tensors = candle_core::safetensors::load(root.join("nar.safetensors"), &Device::Cpu)?;
     let metadata: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.join("nar.json"))?)?;
     let steps = metadata["steps"].as_u64().context("Missing steps")? as usize;
+    ensure!(
+        steps == 32 && metadata["method"] == "midpoint",
+        "P3 requires 32 midpoint steps"
+    );
+    // Reuse the paired FP32 Python path established in P3b, preserving P0.
+    let fp32 = if dtype == DType::F32 {
+        Some(candle_core::safetensors::load(
+            root.join("p3b-python.safetensors"),
+            &Device::Cpu,
+        )?)
+    } else {
+        report_bf16_stages(&root)?;
+        None
+    };
     let directory = std::env::var_os("YUE2_MODEL_DIR")
         .map(PathBuf::from)
         .map(Ok)
         .unwrap_or_else(|| yue2::model::snapshot_dir("YuE2-3B"))?;
     // SAFETY: local checkpoint is immutable throughout the run.
-    let model =
-        unsafe { YuE2ForCausalLM::from_pretrained_with_nar(directory, DType::BF16, &device)? };
+    let model = unsafe { YuE2ForCausalLM::from_pretrained_with_nar(directory, dtype, &device)? };
     let mut passed = true;
     let mut outputs = Vec::new();
     for index in 0..2 {
@@ -68,7 +99,7 @@ fn p3_dumped_noise_latents() -> Result<()> {
             nar_cond_end: 0,
         };
         let engine = CachedNAR::new(&model, &chunk, 128)?;
-        if std::env::var_os("YUE2_NAR_DIAGNOSTIC").is_some() {
+        if dtype == DType::BF16 && std::env::var_os("YUE2_NAR_DIAGNOSTIC").is_some() {
             for step in [0, 1, 16, 31] {
                 let key = format!("{stem}.step.{step:02}");
                 let raw = tensors[&format!("{key}.raw_t")].to_scalar::<f64>()?;
@@ -81,17 +112,25 @@ fn p3_dumped_noise_latents() -> Result<()> {
         let start = std::time::Instant::now();
         let mut progress = |done, total| {
             if done % 8 == 0 {
-                println!("P3 {stem} step {done}/{total}");
+                println!("{tier} {stem} step {done}/{total}");
             }
         };
         let actual = engine.solve(steps, None, Some(&mut progress))?;
-        let (max, cos) = metrics(&actual, &tensors[&format!("{stem}.latents")])?;
+        let reference = match &fp32 {
+            Some(control) => &control[&format!("control.fp32.chunk.{index}")],
+            None => &tensors[&format!("{stem}.latents")],
+        };
+        let (max, cos) = metrics(&actual, reference)?;
         println!(
-            "P3 {stem}: frames={} max_abs={max:.12} cosine={cos:.12} seconds={:.6}",
+            "{tier} {stem}: frames={} max_abs={max:.12} cosine={cos:.12} seconds={:.6}",
             actual.dim(0)?,
             start.elapsed().as_secs_f64()
         );
-        passed &= max <= 1e-2 && cos >= 0.999;
+        passed &= if dtype == DType::F32 {
+            max <= 1e-3 && cos >= 0.999999
+        } else {
+            cos >= 0.999 // max_abs and stage diagnostics are advisory in tier (b).
+        };
         outputs.push((stem, actual));
     }
     std::fs::create_dir_all(root.join("p3"))?;
@@ -99,12 +138,62 @@ fn p3_dumped_noise_latents() -> Result<()> {
         &outputs
             .into_iter()
             .collect::<std::collections::HashMap<_, _>>(),
-        root.join("p3/latents.safetensors"),
+        root.join(if dtype == DType::F32 {
+            "p3/latents-fp32.safetensors"
+        } else {
+            "p3/latents.safetensors"
+        }),
     )?;
     ensure!(
         passed,
-        "P3 requires max_abs <= 0.01 and cosine >= 0.999 for BOTH chunks"
+        "{tier}: both chunks must satisfy the TASK.md gate (FP32 max_abs <= 1e-3 and cosine >= 0.999999; BF16 cosine >= 0.999)"
     );
+    Ok(())
+}
+
+// These native-stage measurements are the retained P3b investigation, not
+// additional pass/fail criteria. This test reruns both complete trajectories.
+fn report_bf16_stages(root: &std::path::Path) -> Result<()> {
+    let path = root.join("p3b-comparison.json");
+    let report: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+    let rows = &report["rows"];
+    println!(
+        "P3(b) native-stage diagnostic source: {} (retained P3b trace)",
+        path.display()
+    );
+    for name in [
+        "noise",
+        "state",
+        "rope.inv_freq",
+        "ar.cos",
+        "ar.embedding.output",
+        "ar.layer.00.norm.output",
+        "ar.layer.00.q_proj.output",
+        "ar.layer.00.q",
+        "audio.output",
+        "time.freqs",
+        "time.output",
+        "vae2llm.output",
+        "injected",
+        "nar.layer.00.output",
+        "final_norm.output",
+        "velocity",
+        "step.00.mid",
+        "step.00.next",
+        "step.00.raw_t",
+        "latents",
+    ] {
+        let row = &rows[name];
+        println!(
+            "P3(b) stage {name}: Python={} Rust={} max_abs={}",
+            row["python_dtype"], row["rust_dtype"], row["max_abs"]
+        );
+    }
+    let first = report["first_over_1e-3"]
+        .as_str()
+        .context("Missing first divergent stage")?;
+    println!("P3(b) first divergent operation above 1e-3: {first} (AR layer 0 Q after RoPE), max_abs={}; earlier nonzero FP32 precursor rope.inv_freq max_abs={}",
+        rows[first]["max_abs"], rows["rope.inv_freq"]["max_abs"]);
     Ok(())
 }
 
