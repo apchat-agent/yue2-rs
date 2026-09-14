@@ -113,14 +113,18 @@ SheetSage2 / MERT2 (covers, audio -> ABC) is OUT of scope for v1.
   Python tool for this).
 
 ### Phase 2: AR sampling + full plan and semantic generation
-- Gate P2a: with the same seed and sampling params, generate a full plan; the ABC
-  must parse (same section tags, same key/meter line count as the reference) and
-  length within 30% of the reference token count.
+- Gate P2a (ADVISORY since 2026-09-14, owner decision: sampling is not bit-exact by
+  design, so structural identity of a sampled plan is reported, not required): with
+  the same seed and sampling params, generate a full plan; the ABC must parse; report
+  its section tags next to the reference tags, the key/meter line count, and the
+  length ratio (target within 30%). Only "does not parse" fails the gate.
 - Gate P2b: semantic tokens generated from the Python plan (teacher-forced plan,
   sampled semantic): token count within 20% of `semantic.npy`, codec-offset range
   valid, truncation flags handled as in pipeline.py.
 - Gate P2c: throughput measured on GPU 0 and reported (tok/s for plan and semantic).
-  Reference Python eager: plan 162 tok/s, semantic 186 tok/s.
+  The 162/186 tok/s figures in result.json were measured with execution=cuda_graph
+  and attention=flash, NOT eager. Measure the Python EAGER number yourself once
+  (execution=eager, same GPU, same request) and report both comparisons.
 
 ### Phase 3: NAR
 - Gate P3: with the dumped noise, Rust latents for the first 2 chunks match Python
